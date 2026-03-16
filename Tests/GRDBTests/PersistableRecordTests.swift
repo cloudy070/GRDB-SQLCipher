@@ -2324,6 +2324,60 @@ extension PersistableRecordTests {
         }
     }
 
+    func test_upsert_WITHOUT_ROWID_optimization() throws {
+#if GRDBCUSTOMSQLITE || SQLITE_HAS_CODEC
+        guard Database.sqliteLibVersionNumber >= 3035000 else {
+            throw XCTSkip("UPSERT is not available")
+        }
+#else
+        guard #available(iOS 15, macOS 12, tvOS 15, watchOS 8, *) else {
+            throw XCTSkip("UPSERT is not available")
+        }
+#endif
+        
+        struct MyRecord: Codable, FetchableRecord, PersistableRecord {
+            var id: String
+            var name: String
+            var score: Int?
+        }
+        
+        try makeDatabaseQueue().write { db in
+            try db.execute(sql: """
+                CREATE TABLE myRecord(
+                  id TEXT NOT NULL PRIMARY KEY,
+                  name TEXT NOT NULL UNIQUE,
+                  score INTEGER NOT NULL
+                ) WITHOUT ROWID;
+                """)
+            
+            do {
+                let record = MyRecord(id: "1", name: "foo", score: 1000)
+                try record.upsert(db)
+                
+                XCTAssertEqual(lastSQLQuery, """
+                    INSERT INTO "myRecord" ("id", "name", "score") \
+                    VALUES ('1','foo',1000) \
+                    ON CONFLICT DO UPDATE SET "name" = "excluded"."name", "score" = "excluded"."score"
+                    """)
+            }
+            do {
+                let record = MyRecord(id: "2", name: "foo", score: 2000)
+                let upserted = try record.upsertAndFetch(db)
+                
+                XCTAssertEqual(lastSQLQuery, """
+                    INSERT INTO "myRecord" ("id", "name", "score") \
+                    VALUES ('2','foo',2000) \
+                    ON CONFLICT DO UPDATE SET "name" = "excluded"."name", "score" = "excluded"."score" \
+                    RETURNING *
+                    """)
+                
+                XCTAssertEqual(upserted.id, "1")
+                XCTAssertEqual(upserted.name, "foo")
+                XCTAssertEqual(upserted.score, 2000)
+            }
+        }
+    }
+    
     func test_upsertAndFetch_do_update_set_where_with_default_strategy() throws {
 #if GRDBCUSTOMSQLITE || SQLITE_HAS_CODEC
         guard Database.sqliteLibVersionNumber >= 3035000 else {
